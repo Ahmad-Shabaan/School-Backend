@@ -1,0 +1,698 @@
+Phase 1:
+# Task: Refactor ASP.NET Core Solution to Strict Clean Architecture
+
+You are a senior .NET software architect.
+
+Your task is to **refactor my existing ASP.NET Core solution** into a **strict Clean Architecture** without changing the application's business behavior.
+
+## Main Goal
+
+Refactor the solution to follow:
+
+* Clean Architecture
+* CQRS (MediatR)
+* Generic Repository Pattern
+* Unit of Work Pattern
+* Specification Pattern (including Projection Specifications)
+* Dependency Injection
+* SOLID principles
+
+Do **NOT** rewrite the business logic unless required by the architecture.
+
+---
+
+# Required Architecture
+
+The solution must contain only these main projects:
+
+```text
+Presentation
+Application
+Domain
+Infrastructure
+```
+
+Project references must be exactly:
+
+```text
+Presentation
+      │
+      ▼
+Application
+      │
+      ▼
+Domain
+      ▲
+      │
+Infrastructure
+```
+
+Meaning:
+
+* Presentation references Application only.
+* Application references Domain only.
+* Infrastructure references both Domain and Application.
+* Domain references nothing.
+* Application MUST NOT reference Infrastructure.
+* Domain MUST NOT reference Infrastructure.
+* No circular dependencies.
+
+---
+
+# Domain Project
+
+The Domain project contains only domain-related code.
+
+Example folders:
+
+```text
+Domain
+│
+├── Entities
+├── Common
+├── Enums
+├── ValueObjects
+├── Events (optional)
+└── Exceptions (domain exceptions only)
+```
+
+Domain must NOT contain:
+
+* EF Core
+* DbContext
+* Repository implementation
+* AutoMapper
+* MediatR handlers
+* Infrastructure code
+* External services
+
+---
+
+# Application Project
+
+The Application project contains all business logic.
+
+Organize by Features.
+
+```text
+Application
+│
+├── Features
+│
+│   ├── Products
+│   │     ├── Commands
+│   │     ├── Queries
+│   │     ├── DTOs
+│   │     ├── Validators
+│   │     ├── Specifications
+│   │     └── Mapping
+│   │
+│   ├── Orders
+│   ├── Basket
+│   ├── Identity
+│   └── ...
+│
+├── Interfaces
+│
+├── Common
+│
+├── Behaviors
+│
+├── Exceptions
+│
+└── DependencyInjection
+```
+
+Move all business logic from Services into CQRS Handlers where appropriate.
+
+Use MediatR for every Command and Query.
+
+---
+
+# CQRS Rules
+
+Queries:
+
+* Use Repository
+* Use Specification Pattern
+* Use Projection Specification whenever possible
+* Never use DbContext directly
+
+Commands:
+
+* Use Unit Of Work
+* Use Repository through Unit Of Work
+* Save changes only through UnitOfWork
+
+---
+
+# Generic Repository
+
+Repository interfaces belong to:
+
+```text
+Application/Interfaces
+```
+
+Implementation belongs to:
+
+```text
+Infrastructure/Persistence/Repositories
+```
+
+Repository implementation must use EF Core only.
+
+---
+
+# Unit Of Work
+
+Interface:
+
+```text
+Application/Interfaces
+```
+
+Implementation:
+
+```text
+Infrastructure/Persistence
+```
+
+Commands should depend on:
+
+```csharp
+IUnitOfWork
+```
+
+not on EF Core.
+
+---
+
+# Specification Pattern
+
+Specification interfaces belong to:
+
+```text
+Application
+```
+
+Example:
+
+```text
+Specifications
+│
+├── ISpecification.cs
+├── IProjectionSpecification.cs
+├── BaseSpecification.cs
+├── BaseProjectionSpecification.cs
+```
+
+Concrete Specifications should be organized inside each Feature.
+
+Example:
+
+```text
+Features
+└── Products
+      └── Specifications
+```
+
+SpecificationEvaluator belongs to:
+
+```text
+Infrastructure/Persistence
+```
+
+because it depends on EF Core.
+
+---
+
+# Persistence
+
+Move everything related to EF Core into:
+
+```text
+Infrastructure
+└── Persistence
+```
+
+Structure:
+
+```text
+Persistence
+│
+├── Context
+│     └── StoreContext.cs
+│
+├── Configurations
+│
+├── Migrations
+│
+├── Repositories
+│     ├── GenericRepository.cs
+│     ├── UnitOfWork.cs
+│     └── SpecificationEvaluator.cs
+│
+└── Seed
+```
+
+Do NOT create a separate Persistence project.
+
+Persistence must remain a folder inside Infrastructure.
+
+---
+
+# Infrastructure
+
+Contains implementation details only.
+
+Example:
+
+```text
+Infrastructure
+│
+├── Persistence
+│
+├── Identity
+│
+├── Services
+│     ├── JwtService
+│     ├── EmailService
+│     ├── PaymentService
+│     ├── CloudinaryService
+│     └── ...
+│
+└── DependencyInjection
+```
+
+Infrastructure implements interfaces defined in Application.
+
+---
+
+# Presentation
+
+Contains only:
+
+* Controllers
+* Endpoints
+* Middleware
+* Views (if MVC)
+* Program.cs
+* Filters
+
+Controllers should only call:
+
+```csharp
+await _mediator.Send(...)
+```
+
+No business logic inside Controllers.
+
+---
+
+# Dependency Injection
+
+Move registrations into extension methods.
+
+Example:
+
+```csharp
+services.AddApplication();
+services.AddInfrastructure(configuration);
+```
+
+Keep Program.cs clean.
+
+---
+
+# References
+
+Fix all project references to satisfy Clean Architecture.
+
+Remove any invalid reference.
+
+Especially remove:
+
+* Application -> Infrastructure
+* Domain -> Infrastructure
+* Domain -> Presentation
+
+---
+
+# Refactoring Rules
+
+* Preserve all functionality.
+* Preserve APIs.
+* Preserve database schema unless necessary.
+* Preserve entity names.
+* Preserve DTOs where possible.
+* Do not introduce breaking changes unless required.
+* Keep naming consistent.
+* Remove duplicate code.
+* Follow SOLID.
+* Follow Clean Code principles.
+
+---
+
+# Final Output
+
+Produce:
+
+1. Updated solution structure.
+2. Updated project references.
+3. List of moved files.
+4. List of renamed files.
+5. New folder structure.
+6. Explain every architectural change.
+7. Explain why each change improves Clean Architecture.
+8. If a class belongs in another layer, move it automatically.
+9. If a dependency direction violates Clean Architecture, fix it automatically.
+
+Do not stop after analysis. Perform the complete refactoring and provide the updated project structure and code changes.
+
+
+
+
+# Phase 2 - Identity & User Management API
+
+## Overview
+
+This phase extends the authentication system by implementing complete user management functionality using ASP.NET Identity.
+
+> **Current Status**
+>
+> - ✅ User Login is already implemented and fully working.
+> - All upcoming endpoints **must follow exactly the same architecture, coding style, validation flow, error handling, response format, and project structure used in the Login feature.**
+> - Do **NOT** introduce a different coding pattern for the new endpoints.
+
+---
+
+# General Development Rules
+
+Every endpoint in this phase must:
+
+- Follow the existing Clean Architecture.
+- Follow the same folder structure as Login.
+- Use the same CQRS pattern (Command/Query + Handler).
+- Use FluentValidation where needed.
+- Use AutoMapper where applicable.
+- Return the same ApiResponse structure currently used in Login.
+- Use ASP.NET Identity (UserManager, RoleManager, SignInManager when required).
+- Be fully asynchronous.
+- Follow the same exception handling strategy.
+- Respect authorization policies.
+- Return proper HTTP status codes.
+
+Do not bypass Identity by directly manipulating database tables.
+
+---
+
+# Existing Endpoint
+
+## User Login
+
+### Status
+
+Completed.
+
+### Notes
+
+This endpoint is considered the reference implementation for this phase.
+
+All new endpoints should mimic its implementation style including:
+
+- Validation
+- Handler structure
+- Dependency Injection
+- Repository usage (when applicable)
+- Identity usage
+- Response formatting
+- Authorization
+- Error handling
+
+---
+
+# User Management
+
+These endpoints are responsible for managing application users.
+
+Only authorized administrators can access these endpoints unless stated otherwise.
+
+---
+
+# 1. Get All Users
+
+## Purpose
+
+Retrieve a paginated list of all users.
+
+## Authorization
+
+Admin only.
+
+## Response should include
+
+- User Id
+- Full Name
+- Email
+- Phone Number
+- Current Role
+- Email Confirmed
+- Lockout Status
+- Created Date (if available)
+
+Do not return:
+
+- Password Hash
+- Security Stamp
+- Concurrency Stamp
+- Refresh Tokens
+- Any sensitive Identity information
+
+---
+
+# 2. Create User
+
+## Purpose
+
+Allow an administrator to create a new user.
+
+## Authorization
+
+Admin only.
+
+---
+
+## Request
+
+The frontend will send:
+
+- Full Name
+- Email
+- Password
+- Phone Number (optional)
+- Address (optional)
+- Role
+
+Example roles:
+
+- Admin
+- Customer
+
+The backend must:
+
+- Validate all input.
+- Ensure email is unique.
+- Create the Identity user.
+- Assign the selected role.
+- Return appropriate validation errors if creation fails.
+
+---
+
+## Important Notes
+
+The frontend determines which role should be assigned.
+
+The backend is responsible for:
+
+- verifying the role exists
+- assigning the role
+- returning an error if the role is invalid
+
+Never hardcode roles inside the endpoint.
+
+---
+
+# 3. Update User
+
+## Purpose
+
+Update an existing user's information.
+
+## Authorization
+
+Admin only.
+
+---
+
+## Editable Fields
+
+- Full Name
+- Email
+- Phone Number
+- Address
+- Role
+
+---
+
+## Role Update
+
+This endpoint must support changing the user's role.
+
+Implementation should:
+
+1. Retrieve current user roles.
+2. Remove existing role(s).
+3. Assign the new role received from frontend.
+
+The frontend always sends the desired role.
+
+---
+
+## Validation
+
+- User must exist.
+- Email must remain unique.
+- Role must exist.
+- Return validation errors when necessary.
+
+---
+
+# 4. Delete User
+
+## Purpose
+
+Delete an existing user.
+
+## Authorization
+
+Admin only.
+
+---
+
+## Validation
+
+Before deletion:
+
+- Verify user exists.
+- Prevent deleting non-existing users.
+- Return appropriate response.
+
+Use Identity APIs for deletion.
+
+---
+
+# Security
+
+Deletion must only be accessible to administrators.
+
+---
+
+# Authorization Requirements
+
+The following endpoints require Admin authorization:
+
+- Get All Users
+- Create User
+- Update User
+- Delete User
+
+Endpoints must be protected using the project's existing authorization strategy.
+
+Do not implement custom authorization logic if the project already provides policies or role-based authorization.
+
+---
+
+# Identity Rules
+
+All user operations must be performed using ASP.NET Identity.
+
+Preferred services include:
+
+- UserManager<ApplicationUser>
+- RoleManager<IdentityRole>
+
+Do not:
+
+- Insert directly into AspNetUsers.
+- Insert directly into AspNetUserRoles.
+- Update role tables manually.
+
+---
+
+# Validation Rules
+
+Typical validation should include:
+
+## Email
+
+- Required
+- Valid email format
+- Must be unique
+
+## Password (Create User)
+
+Follow the Identity password policy already configured in the project.
+
+## Role
+
+- Required
+- Must exist
+
+## Name
+
+- Required
+- Maximum length according to existing project rules.
+
+---
+
+# API Response
+
+All endpoints should return the project's standard response model.
+
+Examples include:
+
+Success:
+
+- Success message
+- Returned DTO (when applicable)
+
+Failure:
+
+- Validation errors
+- Not Found
+- Unauthorized
+- Forbidden
+- Bad Request
+
+Maintain consistency with the Login endpoint responses.
+
+---
+
+# Deliverables
+
+At the end of Phase 2, the API should support:
+
+- ✅ Login
+- ✅ Get Users
+- ✅ Create User
+- ✅ Update User
+- ✅ Change User Role
+- ✅ Delete User
+
+All implemented using the same architecture, conventions, and coding flow established by the Login feature.
+
+
+
+
+

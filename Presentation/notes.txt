@@ -1,0 +1,8 @@
+|                        Status | Meaning                                | Example                                                |
+| ----------------------------: | -------------------------------------- | ------------------------------------------------------ |
+|           **400 Bad Request** | The request is malformed or invalid.   | Invalid JSON, missing required field, wrong data type. |
+|          **401 Unauthorized** | Authentication is required or invalid. | Missing or invalid JWT.                                |
+|             **403 Forbidden** | Authenticated but not allowed.         | Student tries to access an admin endpoint.             |
+|             **404 Not Found** | Resource doesn't exist.                | User ID doesn't exist.                                 |
+|              **409 Conflict** | Resource conflicts with current state. | Email already exists.                                  |
+| **422 Unprocessable Content** | Validation/business rule failure.      | Password too weak, invalid email format.               |
