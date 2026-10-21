@@ -11,4 +11,6 @@ public class Course
     public byte[]? File { get; set; }
 
     public ICollection<UserCourse> UserCourses { get; set; } = new List<UserCourse>();
+
+    public ICollection<Lesson> Lessons { get; set; } = new List<Lesson>();
 }

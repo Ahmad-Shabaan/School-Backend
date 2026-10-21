@@ -6,3 +6,293 @@
 |             **404 Not Found** | Resource doesn't exist.                | User ID doesn't exist.                                 |
 |              **409 Conflict** | Resource conflicts with current state. | Email already exists.                                  |
 | **422 Unprocessable Content** | Validation/business rule failure.      | Password too weak, invalid email format.               |
+
+
+
+
+
+Here's a complete, copy-pasteable integration matching the backend contract exactly (route sets lessonId server-side, camelCase JSON, Result<T> wrapper, and the server's validation rules).
+1. API layer
+// progressApi.ts
+export interface ProgressReportBody {
+  currentTimeSeconds: number;
+  durationSeconds: number;
+  watchedSegmentStartSeconds?: number | null;
+  watchedSegmentEndSeconds?: number | null;
+}
+
+export interface LessonProgressDto {
+  lessonId: number;
+  lastPositionSeconds: number;
+  durationSeconds: number;
+  watchedPercentage: number;
+  isVideoCompleted: boolean;
+  updatedAt: string;
+}
+
+interface ApiError {
+  code: string;      // e.g. "Progress.SegmentTooLong", "Lesson.Locked"
+  message: string;
+  statusCode: number;
+}
+
+interface Result<T> {
+  success: boolean;
+  message: string;
+  data?: T;
+  error?: ApiError;
+}
+
+export class ProgressError extends Error {
+  constructor(public code: string, message: string, public statusCode: number) {
+    super(message);
+  }
+}
+
+// plug your auth in here (Bearer header, cookie, etc.)
+let getAuthHeaders: () => Record<string, string> = () => ({});
+export function setAuthHeaderProvider(fn: () => Record<string, string>) {
+  getAuthHeaders = fn;
+}
+
+async function request<T>(
+  url: string,
+  init: RequestInit & { keepalive?: boolean } = {},
+): Promise<T> {
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+      ...((init.headers as Record<string, string>) ?? {}),
+    },
+  });
+
+  const body = (await res.json()) as Result<T>;
+
+  if (!body.success || !body.data) {
+    throw new ProgressError(
+      body.error?.code ?? "Unknown",
+      body.error?.message ?? body.message,
+      res.status,
+    );
+  }
+  return body.data;
+}
+
+export const getLessonProgress = (lessonId: number) =>
+  request<LessonProgressDto>(`/api/lessons/${lessonId}/progress`);
+
+// lessonId comes from the route on the server – no need to send it
+export const submitProgress = (
+  lessonId: number,
+  payload: ProgressReportBody,
+  opts: { keepalive?: boolean } = {},
+) =>
+  request<LessonProgressDto>(`/api/lessons/${lessonId}/progress`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    keepalive: opts.keepalive ?? false,
+  });
+2. The tracker (YouTube IFrame Player API)
+Lessons embed YouTube, so there's no <video> element — we poll getCurrentTime() instead of listening to timeupdate.
+// VideoProgressTracker.ts
+import {
+  getLessonProgress,
+  submitProgress,
+  ProgressError,
+  type ProgressReportBody,
+} from "./progressApi";
+
+const REPORT_INTERVAL_S = 10;   // flush every 10 s of playback (server cap: 120 s/segment)
+const MAX_SEGMENT_S = 100;      // hard stop below the 120 s server limit
+const SEEK_THRESHOLD_S = 2;     // playhead jump > 2 s ⇒ seek (normal ticks are ~0.5 s)
+const TICK_MS = 500;
+const MIN_SEGMENT_S = 1;        // don't send degenerate segments
+const FATAL_CODES = new Set([
+  "Lesson.Locked",
+  "Lesson.NotEnrolled",
+  "Progress.LessonHasNoVideo",
+  "Lesson.NotFound",
+]);
+
+interface Playhead {
+  getCurrentTime(): number;
+  getDuration(): number;
+  getPlayerState(): number; // 1 = playing, 0 = ended (YT) – adapter maps it
+  seekTo(seconds: number, allowSeekAhead: boolean): void;
+}
+
+export class VideoProgressTracker {
+  private segmentStart: number | null = null; // open watched window (video seconds)
+  private lastTick = 0;                       // last observed playhead – pre-seek anchor
+  private lastFlushVideoTime = 0;
+  private duration = 0;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private stopped = false;
+  private inFlight = false;
+
+  constructor(
+    private readonly lessonId: number,
+    private readonly player: Playhead,
+  ) {}
+
+  /** Call once when the player is ready. Restores position, then starts ticking. */
+  async start() {
+    const saved = await getLessonProgress(this.lessonId);
+    this.duration = this.player.getDuration();
+
+    if (saved.lastPositionSeconds > 1) {
+      // resume seek happens BEFORE tracking opens a window → not counted as a seek
+      this.player.seekTo(saved.lastPositionSeconds, true);
+      this.lastTick = saved.lastPositionSeconds;
+    }
+
+    window.addEventListener("pagehide", this.flushOnUnload);
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
+
+    this.timer = setInterval(this.tick, TICK_MS);
+  }
+
+  stop() {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    window.removeEventListener("pagehide", this.flushOnUnload);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
+  }
+
+  /**
+   * The ONE method that talks to the backend.
+   * end = pre-seek / current position being reported, NOT the live playhead,
+   * so the server always sees segmentEnd <= currentTimeSeconds + 5.
+   */
+  private async flush(end: number, keepWindowOpen: boolean) {
+    const start = this.segmentStart;
+    if (start === null) return;
+    if (end - start < MIN_SEGMENT_S) {
+      if (!keepWindowOpen) this.segmentStart = null;
+      return;
+    }
+    if (this.inFlight) return; // next tick retries; window is NOT advanced yet
+    this.inFlight = true;
+
+    const payload: ProgressReportBody = {
+      currentTimeSeconds: end,
+      durationSeconds: this.duration,
+      watchedSegmentStartSeconds: start,
+      watchedSegmentEndSeconds: end,
+    };
+
+    try {
+      await submitProgress(this.lessonId, payload);
+      // only advance/close the window on success → failures are retried,
+      // and the server's interval-union makes the overlap harmless
+      this.lastFlushVideoTime = end;
+      this.segmentStart = keepWindowOpen ? end : null;
+    } catch (err) {
+      if (err instanceof ProgressError && FATAL_CODES.has(err.code)) {
+        this.stop(); // locked/deleted lesson – stop hammering the API
+      }
+      // network/5xx: keep segmentStart → re-sent on the next flush
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private tick = () => {
+    if (this.stopped) return;
+
+    const t = this.player.getCurrentTime();
+    const state = this.player.getPlayerState();
+    const playing = state === 1;
+    const ended = state === 0;
+
+    // ── SEEK DETECTION ──────────────────────────────────────────────
+    // a jump > 2 s means the user scrubbed. Close the open window at the
+    // PRE-jump position (lastTick) so the skipped region is never covered,
+    // then reopen AFTER the jump only if still playing.
+    if (
+      this.segmentStart !== null &&
+      Math.abs(t - this.lastTick) > SEEK_THRESHOLD_S
+    ) {
+      void this.flush(this.lastTick, false);
+      this.segmentStart = playing ? t : null; // new window starts post-jump
+      this.lastTick = t;
+      this.lastFlushVideoTime = t;
+      return;
+    }
+
+    if (ended && this.segmentStart !== null) {
+      void this.flush(Math.min(t, this.duration), false);
+      this.lastTick = t;
+      return;
+    }
+
+    // ── OPEN / PERIODIC FLUSH ───────────────────────────────────────
+    if (playing) {
+      if (this.segmentStart === null) {
+        this.segmentStart = t; // playback actually resumed
+        this.lastFlushVideoTime = t;
+      }
+
+      const watchedSoFar = t - this.segmentStart;
+      if (
+        t - this.lastFlushVideoTime >= REPORT_INTERVAL_S ||
+        watchedSoFar >= MAX_SEGMENT_S
+      ) {
+        void this.flush(t, true); // close segment, keep watching
+      }
+    }
+
+    this.lastTick = t;
+  };
+
+  private flushOnUnload = () => {
+    if (this.segmentStart !== null) {
+      void this.flush(this.lastTick, false);
+      // keepalive lets the POST survive page unload (≤ 64 KB – plenty)
+      submitProgress(
+        this.lessonId,
+        {
+          currentTimeSeconds: this.lastTick,
+          durationSeconds: this.duration,
+        },
+        { keepalive: true },
+      ).catch(() => {});
+    }
+  };
+
+  private onVisibilityChange = () => {
+    if (document.visibilityState === "hidden") {
+      void this.flush(this.lastTick, false); // tab switched → close window
+    }
+  };
+}
+Wire-up (YouTube IFrame API):
+const tracker = new VideoProgressTracker(lessonId, {
+  getCurrentTime: () => player.getCurrentTime(),
+  getDuration: () => player.getDuration(),
+  getPlayerState: () => player.getPlayerState(),
+  seekTo: (s, allow) => player.seekTo(s, allow),
+});
+
+player.addEventListener("onStateChange", (e: { data: number }) => {
+  if (e.data === YT.PlayerState.PLAYING) tracker.start();       // idempotent-safe: see note
+  if (e.data === YT.PlayerState.PAUSED)  tracker["flush"](player.getCurrentTime(), false);
+  if (e.data === YT.PlayerState.ENDED)   tracker["flush"](player.getDuration(), false);
+});
+// cleaner: expose public pause()/ended() methods instead of ["flush"] — same body
+3. When to execute
+Moment	Action	Why
+Player onReady	GET progress → seekTo(saved) + start ticker	restore position & start tracking
+Every 500 ms (ticker)	detect jumps; nothing sent	cheap local polling, no network
+Every 10 s of playback	POST open segment	server rejects segments > 120 s → forces periodic proof
+pause / tab hidden / pagehide	POST final [start, lastTick], close window	persist what was actually watched
+ended	POST with currentTime = duration + open window	stores final position (does not grant 90%)
+Server responds Lesson.Locked / NotEnrolled / LessonHasNoVideo	stop tracker	don't spam a lesson you can't report to
+4. How seeking is handled (the important part)
+- Never let one segment span a jump. The server only checks end ≤ position + 5s, so a naive [oldStart, afterSeekTime] segment would credit the skipped minutes as watched. That's why the tracker anchors lastTick every tick and, on a jump > 2 s, closes the window at the pre-jump position (flush(lastTick, false)), then reopens after the jump.
+- Backward seek (flush sends currentTimeSeconds = lastTick, the old position): stays within the ±5 s tolerance; the next normal report overwrites lastPositionSeconds.
+- Resume-on-load seek happens before any window is open → it isn't treated as a seek.
+- Server-side safety net: coverage is the union of accepted segments, duplicate/overlapping intervals don't double-count, and seeking alone (position without segment) adds 0 %. Your client never sends watchedPercentage, isWatched, or StudentId — the backend computes all of them.
+If you ever switch to a self-hosted <video>, the same tracker maps 1:1: timeupdate → tick, play → open window, pause/ended → flush(close), seeking → flush(lastTick, false).

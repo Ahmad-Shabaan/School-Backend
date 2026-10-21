@@ -27,6 +27,10 @@ public static class DependencyInjection
         services.Configure<JwtOptions>(
             configuration.GetSection(JwtOptions.SectionName));
 
+        services.Configure<Application.Common.LearningPlatformOptions>(
+            configuration.GetSection(
+                Application.Common.LearningPlatformOptions.SectionName));
+
         var jwtOptions = configuration
             .GetSection(JwtOptions.SectionName)
             .Get<JwtOptions>()!;
